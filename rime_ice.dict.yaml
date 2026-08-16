@@ -6,6 +6,9 @@ name: rime_ice
 version: "2026-01-26"
 import_tables:
   - cn_dicts/8105     # 字表
+  # ===== Rimi 专业词库（必选，重复词条取此处权重）=====
+  - rimi.medical      # 医学·中医（伤寒金匮方剂/中药/穴位/病证）
+  - rimi.yijing       # 易经·术数（六十四卦/爻辞/紫微斗数）
   # - cn_dicts/41448  # 大字表（按需启用）（启用时和 8105 同时启用并放在 8105 下面）
   - cn_dicts/base     # 基础词库
   - cn_dicts/ext      # 扩展词库
