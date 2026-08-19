@@ -36,6 +36,9 @@ switches:
   - name: search_single_char  # search.lua 的功能开关，辅码查词时是否单字优先
     states: [正常, 单字]
     abbrev: [词, 单]
+  - name: typo_correction  # 按键误触自动修正（lua/typo_correction_filter.lua）
+    states: [纠错, 原码]
+    reset: 1
 
 
 # 输入引擎
@@ -73,6 +76,9 @@ engine:
     - lua_translator@*force_gc           # 暴力 GC
   filters:
     - lua_filter@*corrector                         # 错音错字提示
+    - lua_filter@*typo_correction_filter            # 按键误触自动修正（全拼+简拼，零干扰）
+    # 🔥 顺序铁律：必须挂在 corrector 之后——corrector 会清空非「［拼音］」格式的
+    # comment，我们的「← 正确编码」注释放它后面才保得住
     - reverse_lookup_filter@radical_reverse_lookup  # 部件拆字滤镜
     - lua_filter@*autocap_filter                    # 英文自动大写
     - lua_filter@*v_filter                          # v 模式 symbols 优先
@@ -105,6 +111,18 @@ lunar_template: "{干支年}{生肖}年{俗称农历月}{农历日}"
 
 # Lua 配置: 生成 UUID 的触发关键字
 uuid: uuid
+
+
+# Lua 配置：按键误触自动修正（lua/typo_correction_filter.lua）
+# 按错一个键（邻键误触/两键按反/多按一下）时自动把用户真正想打的词放进候选前列，
+# comment 标注正确编码（如 ← zhrmghg）。正常输入零干扰（等长真词/全拼途中直通）。
+# 开关：switches/typo_correction（Ctrl+` 方案选单切「纠错/原码」，默认开）
+typo_correction:
+  max_candidates: 5     # 注入的修正候选上限
+  min_code_length: 4    # 短于此长度的编码不参与修正
+  max_code_length: 26   # 超过此长度的编码不参与修正
+  scan_cap: 100         # 等长真词扫描的候选数上限（每键开销）
+  per_variant_cap: 8    # 每个修正变体最多收集的候选数
 
 
 # Lua 配置：长词优先
@@ -165,6 +183,7 @@ pin_cand_filter:
 # 主翻译器，拼音
 translator:
   dictionary: rime_ice         # 挂载词库 rime_ice.dict.yaml
+  enable_correction: false
   enable_word_completion: true # 大于 4 音节的词条自动补全，librime > 1.11.2
   # max_sentences: 1           # 造句数量，偏好长句输入可设置大于 1，librime ≥ 1.17.0
   spelling_hints: 8            # corrector.lua ：为了让错音错字提示的 Lua 同时适配全拼双拼，将拼音显示在 comment 中
