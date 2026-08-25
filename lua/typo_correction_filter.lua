@@ -3,7 +3,11 @@
 -- 用途：打字时不小心按错一个键（按成邻键/两键按反/多按一下），
 --       程序自动识别用户真正想打的词，照常放进候选列表前列。
 -- 示例：想打 zhrmghg（中华人民共和国），误输 zhrnghg（m 按成邻键 n）
---       → 候选首位仍然是「中华人民共和国」，comment 提示 ← zhrmghg
+--       → 候选首位仍然是「中华人民共和国」。
+--       🔥 2026-08-26 用户反馈：不再给修正候选加「← 正确编码」注释——
+--       kimpanel 候选框会把 comment 拼在词后面，箭头+全拼白白占宽度，
+--       视障放大字号时一屏只装得下 3-4 个候选。修正候选置顶本身就是提示，
+--       注释纯属浪费空间，改为空 comment。
 --
 -- 为什么不用 librime 原生 enable_correction（2026-08-19 实测否决）：
 --   内置 NearSearchCorrector 的容差 threshold=5 硬编码在 syllabifier.cc，
@@ -226,12 +230,13 @@ function M.func(input, env)
         return
     end
 
-    -- 误触修正候选置顶，comment 标注正确编码
+    -- 误触修正候选置顶（2026-08-26 起不加注释：comment 会被候选框拼在词后
+    -- 占宽度，「← 全拼」对选词没有帮助——置顶顺序本身就是修正信号）
     local seen = {}
     for _, c in ipairs(found) do
         if not seen[c.text] then
             seen[c.text] = true
-            local cand = Candidate('typo', seg.start, seg._end, c.text, '← ' .. c.corrected)
+            local cand = Candidate('typo', seg.start, seg._end, c.text, '')
             cand.quality = 10   -- 压过翻译器候选（initial_quality 1.2）
             yield(cand)
         end
