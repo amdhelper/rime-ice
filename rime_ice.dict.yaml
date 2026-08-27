@@ -10,6 +10,7 @@ import_tables:
   - rimi.medical      # 医学·中医（伤寒金匮方剂/中药/穴位/病证）
   - rimi.yijing       # 易经·术数（六十四卦/爻辞/紫微斗数）
   - rimi.zwds_bazi    # 紫微斗数·八字命理
+  - rimi.shushu       # 术数大全（格局/神煞/六爻/奇门/六壬/梅花/风水）
   # - cn_dicts/41448  # 大字表（按需启用）（启用时和 8105 同时启用并放在 8105 下面）
   - cn_dicts/base     # 基础词库
   - cn_dicts/ext      # 扩展词库
