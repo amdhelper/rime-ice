@@ -6,8 +6,9 @@
 
 ---
 name: melt_eng
-version: "2023-05-09"
+version: "2026-08-29"
 import_tables:
   - en_dicts/en_ext # 补充（里面有些许带权重的，且和 en 重复，需要把 en_ext 放在上面）
-  - en_dicts/en     # 英文主词库
+  - en_dicts/en     # 英文主词库（2万常见词）
+  - en_dicts/en_full # 🔥 英文全库：ECDICT (MIT) 40万专业词汇 + 科技热词，COCA词频权重排序
 ...
