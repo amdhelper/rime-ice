@@ -46,6 +46,7 @@ engine:
   processors:
     - lua_processor@*select_character  # 以词定字
     - ascii_composer
+    - lua_processor@*direct_eng    # 🔥 英文直出(2026-08-29): 正在打字母串(如 wumi)时按左Shift直接把这串字母作为英文上屏——词库没有的罕见英文也不再卡手(非 ascii_mode + 纯字母 input)
     - recognizer
     - key_binder
     - speller
