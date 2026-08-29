@@ -29,8 +29,14 @@ local function direct_eng(key, env)
   end
 
   local ctx = env.engine.context
-  -- 仅在正在组成时才有意义；ascii_mode（西文态）放行给 RIME 中英切换
-  if env.engine.context:is_ascii_mode() ~= false and env.engine.context:is_ascii_mode() then
+  -- 仅在正在组成时才有意义；ascii_mode（西文态）放行给 RIME 中英切换。
+  -- 🔥 2026-08-29 修复：is_ascii_mode() 不是 RIME lua context 的方法（实测报
+  --    "attempt to call a nil value (method 'is_ascii_mode')" 导致整个 processor
+  --    崩溃，Shift 压下从不 commit → 英文直出失效）。ascii_mode 是 schema 的
+  --    switch（rime_ice/rimi 的 states:[中,Ａ]），正确判断用 ctx:get_option('ascii_mode')。
+  --    注：真西文态下 is_composing() 必为 false（不产候选），此判断主要防
+  --      "正处于英文态却莫名有 input" 的边界，保持语义即可。
+  if ctx:get_option('ascii_mode') then
     return 2
   end
   if not ctx:is_composing() then
