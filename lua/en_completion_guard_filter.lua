@@ -11,8 +11,24 @@
 --
 -- 判定不依赖 cand.type（librime 候选 type 是翻译器自传字符串，不可靠）：
 -- 「纯字母候选 且 text ~= 完整输入码」= 前缀补全词；500 条安全阀防内存膨胀。
+--
+-- 🔥 2026-09-12 三症根治之二（wsm/sm 英文缩写抢首位）：
+--   旧判定只认全拼音节序列——is_pinyin_seq("wsm")=false 直接放行英文，
+--   en_full 词库的垃圾缩写 wsm/S-M/SM 精确匹配抢在「为什么/什么」前面。
+--   新增辅音简拼判定（pinyin_util.is_consonant_abbrev：纯字母、无元音、
+--   合法声母序列，zh/ch/sh 视为整体）——wsm/sm/bcd 是中文简拼，英文沉底。
+--   判定模块与 typo_correction_filter 共享（pinyin_util.lua），防音节表漂移。
+--   词典侧配套：en_full.dict.yaml 已清洗 5420 条无词频全辅音缩写
+--   （scripts/clean_en_full.py），双保险。
 
 local M = {}
+
+-- 🔥 共享拼音判定模块。pcall 容错：缺失时退回本地内联音节表（旧行为），
+-- 不崩溃（金标准 18 项会抓住降级）。
+local ok_pu, pinyin_util = pcall(require, 'pinyin_util')
+if not ok_pu then
+    pinyin_util = nil
+end
 
 -- 标准汉语拼音音节表（无声调，含 v 代 ü 形态；略宽——宁可多判拼音保中文首位）
 local SYLLABLES = {}
@@ -83,21 +99,39 @@ function M.func(input, env)
     local code = env.engine.context.input
     -- 去分隔符（模糊拼音 ' 与空格）转小写后判定
     local clean = code:lower():gsub("[' ]", "")
-    if not is_pinyin_seq(clean) then
-        -- 非拼音序列 = 用户在查英文词：原样放行（前缀补全保持可见）
+    -- 🔥 2026-09-12 中文模式判定扩展：全拼音节序列 或 辅音简拼（sm/wsm/bcd）
+    -- 都视为"用户在打中文"。旧版只认全拼序列，wsm/sm 被当成英文查询直接放行，
+    -- en_full 的缩写词条抢在「为什么/什么」前面（爸爸实测三症之二）。
+    -- 🔥 中间态加严（三症同族根治）：en_full 混着 sh/wom/nih/lis 这类 ECDICT
+    -- 冷僻词条，恰好等于打中文的半途编码（wom=wo+m）——中间态时连 text==code
+    -- 的英文精确词也沉底（完整键入的真英文词 list/cpu 不是中间态，豁免保留）。
+    local partial = false
+    local chinese_mode
+    if pinyin_util then
+        partial = pinyin_util.is_partial_pinyin(clean)
+        chinese_mode = partial
+            or pinyin_util.is_pinyin_seq(clean)
+            or pinyin_util.is_consonant_abbrev(clean)
+    else
+        chinese_mode = is_pinyin_seq(clean)   -- 模块缺失退回旧行为
+    end
+    if not chinese_mode then
+        -- 非拼音序列也非辅音简拼 = 用户在查英文词：原样放行（前缀补全保持可见）
         for cand in input:iter() do
             yield(cand)
         end
         return
     end
-    -- 拼音序列 = 用户在打中文：英文前缀补全沉底（完整键入的英文词不动）
+    -- 拼音序列 = 用户在打中文：英文前缀补全沉底
+    -- （完整键入的英文词 text==code 豁免——但中间态不豁免，见上）
     local pending_en = {}
     local n = 0
     for cand in input:iter() do
         n = n + 1
         if n > 500 then
             yield(cand)
-        elseif cand.text:match("^[%a'%-]+$") and cand.text:lower() ~= code:lower() then
+        elseif cand.text:match("^[%a'%-]+$")
+                and (partial or cand.text:lower() ~= code:lower()) then
             table.insert(pending_en, cand)
         else
             yield(cand)

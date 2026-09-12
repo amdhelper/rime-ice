@@ -91,6 +91,14 @@ local function vowel_count(code)
     return n
 end
 
+-- 🔥 2026-09-12 共享拼音判定模块（合法全拼门控用）。
+-- pcall 容错：模块缺失（旧 deb 漏同步）时 env.pu=nil，退回旧元音门控行为，
+-- 不崩溃不静默降级体验（金标准 18 项会抓住）。
+local ok_pu, pinyin_util = pcall(require, 'pinyin_util')
+if not ok_pu then
+    pinyin_util = nil
+end
+
 local M = {}
 
 function M.init(env)
@@ -159,6 +167,18 @@ function M.func(input, env)
             end
             if has_exact then
                 cached = false   -- 输入正确：零干扰直通
+            elseif pinyin_util and pinyin_util.is_pinyin_seq(code) then
+                -- 🔥 合法全拼门控（2026-09-12 三症根治之一）：
+                -- gongneng/fangneng 是完整合法拼音序列（gong+neng / fang+neng），
+                -- 用户没打错任何键——旧逻辑元音门控要求 元音数>码长/4，
+                -- gongneng 元音=2 恰好不满足 2>2，被误判成"简拼误触码"，
+                -- 邻键变体 gongmeng 反查出的「公孟」（词典权重仅 1）以
+                -- quality=10 强行置顶，永远压过权重 50 万的「功能」，
+                -- 造成"选了功能也不学习"的假象（学习其实生效了：userdb
+                -- 里 功能 c=35，只是永远被注入候选压着）。
+                -- 合法全拼序列 = 输入正确，直通不修正。
+                -- 真误触码（zhrnghg 含非法音节 zhr）不是合法序列，仍走修正。
+                cached = false
             elseif vowel_count(code) > math.floor(#code / 4) then
                 -- 元音密集的全拼码扫不到等长真词 = 半截输入途中（zhongg），
                 -- 跳过昂贵的变体反查（每键最多扫 100 个候选，打字无感）
