@@ -20,6 +20,16 @@
 --   判定模块与 typo_correction_filter 共享（pinyin_util.lua），防音节表漂移。
 --   词典侧配套：en_full.dict.yaml 已清洗 5420 条无词频全辅音缩写
 --   （scripts/clean_en_full.py），双保险。
+--
+-- 🔥 2026-09-14 高频英文词回归（爸爸实测：bot/max 从候选里消失了）：
+--   9-12 的中间态加严过头——「音节+声母」形态的常用英文词全被误杀：
+--   bot(bo+t)、max(ma+x)、six(si+x)、pen(pe+n)、but(bu+t) 都是合法
+--   拼音中间态，旧逻辑 partial=true 时无条件连 text==code 的精确英文词
+--   也沉底，en_full 40万冷僻词补全霸屏，bot 首屏只剩「波特/拨通」。
+--   而当初要杀的鬼词 wom/nih/lis/sh 全都不在 en/en_ext 2.5万常用词表里。
+--   修法：中间态豁免 = 输入码命中常用英文词表（lua/common_en_words.lua，
+--   由 scripts/gen_common_en_words.py 从 en_dicts 生成）。真英文词回原位，
+--   鬼词继续沉底，辅音简拼分支不动，三症回归（19项）不炸。
 
 local M = {}
 
@@ -28,6 +38,13 @@ local M = {}
 local ok_pu, pinyin_util = pcall(require, 'pinyin_util')
 if not ok_pu then
     pinyin_util = nil
+end
+
+-- 常用英文词表（en/en_ext 2.5万词，含缩写/技术词）。pcall 容错：
+-- 缺失时豁免集为空 → 退回 9-12 行为（bot/max 沉底），不崩溃。
+local ok_cw, common_en = pcall(require, 'common_en_words')
+if not ok_cw then
+    common_en = nil
 end
 
 -- 标准汉语拼音音节表（无声调，含 v 代 ü 形态；略宽——宁可多判拼音保中文首位）
@@ -106,14 +123,27 @@ function M.func(input, env)
     -- 冷僻词条，恰好等于打中文的半途编码（wom=wo+m）——中间态时连 text==code
     -- 的英文精确词也沉底（完整键入的真英文词 list/cpu 不是中间态，豁免保留）。
     local partial = false
+    local seq = false
     local chinese_mode
     if pinyin_util then
+        seq = pinyin_util.is_pinyin_seq(clean)
         partial = pinyin_util.is_partial_pinyin(clean)
         chinese_mode = partial
-            or pinyin_util.is_pinyin_seq(clean)
+            or seq
             or pinyin_util.is_consonant_abbrev(clean)
     else
-        chinese_mode = is_pinyin_seq(clean)   -- 模块缺失退回旧行为
+        seq = is_pinyin_seq(clean)
+        chinese_mode = seq   -- 模块缺失退回旧行为
+    end
+    -- 🔥 2026-09-14 中间态豁免（bot/max 回归修复）：输入码是「音节+声母」
+    -- 纯中间态（partial 且非完整拼音序列）且命中 en/en_ext 常用英文词表
+    -- （bot=bo+t / max=ma+x / six=si+x / but=bu+t）→ 视为用户键入英文，
+    -- 原样放行不沉底。鬼词（wom/nih/lis/sh 不在常用表）仍沉底。
+    -- ⚠️ 必须排除 seq：常用表里 he/me/pen/man/women 等 1176 词同时是合法
+    -- 全拼，若一并豁免会把中文高频输入让给英文（9-12 三症原地复发）。
+    -- seq 词的精确英文词（text==code）本就有豁免，前缀补全词继续沉底。
+    if partial and not seq and common_en and common_en[clean] == true then
+        chinese_mode = false
     end
     if not chinese_mode then
         -- 非拼音序列也非辅音简拼 = 用户在查英文词：原样放行（前缀补全保持可见）
