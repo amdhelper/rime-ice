@@ -136,6 +136,79 @@ local function is_pinyin_seq(s)
     return dp[n] == true
 end
 
+-- 🔥 2026-10-31 卡顿根治（爸爸报障「上次提交后打字更卡了」）：
+--   9-14 之前的实现是「边扫边 yield」（librime 的 filter 是惰性拉取，菜单攒够
+--   一页就停），首键实测 ~3ms。a07b3e0 为了把精确英文词托到第 4 位改成
+--   **把整条候选流收进 table 再输出**，等于强制生成全部候选（雾凇模糊拼写
+--   下单字母码有几百上千条）——librime 逐键实测：首键 30ms～3.2s，第二键
+--   20~140ms，稳定态才回到 3ms。这就是「卡顿更频繁」的真凶。
+--   修法：恢复流式输出，只在需要托底（输入码命中 common_en_words）时做
+--   **有界 lookahead**（最多看 LOOKAHEAD 个候选找精确词），其余边扫边 yield。
+local LOOKAHEAD = 64
+
+-- 流式输出：非英文候选立刻 yield；英文前缀补全沉底；want_exact 时把
+-- text==clean 的精确英文词放到第 4 位（0-based EN_SLOT）。
+-- is_exact 先于 is_sink 判定（否则精确词会被沉底逻辑吃掉）。
+local function emit_stream(input, clean, want_exact, is_sink)
+    local sink = {}
+    local held = {}
+    local emitted = 0        -- 已输出的非沉底候选数
+    local exact_done = not want_exact
+    local scanned = 0
+
+    -- ⚠️ 内联 flush（不抽成闭包）：librime-lua 的部分构建在 Lua 5.1 语义下
+    -- yield 不能跨函数边界，抽闭包有 "attempt to yield across C-call boundary" 风险。
+    for cand in input:iter() do
+        scanned = scanned + 1
+        local text = cand.text
+        local is_exact = false
+        if not exact_done and text and is_plain_en(text) and text:lower() == clean then
+            is_exact = true
+        end
+        if is_exact then
+            yield(cand)
+            if emitted >= EN_SLOT then
+                -- 精确词埋在第 4 位之后：插入后把之前暂存的候选原序放出
+                for _, c in ipairs(held) do
+                    yield(c)
+                    emitted = emitted + 1
+                end
+                held = {}
+            end
+            emitted = emitted + 1
+            exact_done = true
+        elseif is_sink(cand) then
+            table.insert(sink, cand)
+        elseif emitted < EN_SLOT then
+            yield(cand)
+            emitted = emitted + 1
+        elseif not exact_done and scanned <= LOOKAHEAD then
+            -- 前 4 个已出，精确词还没出现：暂存，最多看到 LOOKAHEAD 就放弃托底
+            table.insert(held, cand)
+        else
+            if #held > 0 then
+                for _, c in ipairs(held) do
+                    yield(c)
+                    emitted = emitted + 1
+                end
+                held = {}
+            end
+            exact_done = true
+            yield(cand)
+            emitted = emitted + 1
+        end
+    end
+    if #held > 0 then
+        for _, c in ipairs(held) do
+            yield(c)
+        end
+        held = {}
+    end
+    for _, c in ipairs(sink) do
+        yield(c)
+    end
+end
+
 function M.func(input, env)
     local code = env.engine.context.input
     -- 去分隔符（模糊拼音 ' 与空格）转小写后判定
@@ -170,75 +243,32 @@ function M.func(input, env)
         chinese_mode = false
     end
     -- 🔥 2026-10-31：输入码命中常用英文词表 → 精确词保底到第 4 位（见文件头）
-    local want_exact = common_en and common_en[clean] == true
+    local want_exact = common_en and common_en[clean] == true or false
+    local code_lower = code:lower()
 
     if not chinese_mode then
         -- 非拼音序列也非辅音简拼 = 用户在查英文词：原样放行（前缀补全保持可见）。
-        -- 保底位只处理「精确词被埋在后面」的情况；本来就在前三位的不动。
+        -- 只有需要托底时才排队找精确词；否则零改动直通。
         if not want_exact then
             for cand in input:iter() do
                 yield(cand)
             end
             return
         end
-        local out = {}
-        local en_exact = nil
-        for cand in input:iter() do
-            if not en_exact and is_plain_en(cand.text)
-                    and cand.text:lower() == clean then
-                en_exact = cand
-            else
-                table.insert(out, cand)
-            end
-        end
-        if en_exact and #out > EN_SLOT then
-            table.insert(out, EN_SLOT + 1, en_exact)
-            en_exact = nil
-        end
-        for _, cand in ipairs(out) do
-            yield(cand)
-        end
-        if en_exact then
-            yield(en_exact)
-        end
+        emit_stream(input, clean, true, function(_cand) return false end)
         return
     end
     -- 拼音序列 = 用户在打中文：英文前缀补全沉底
     -- （完整键入的英文词 text==code 豁免——但中间态不豁免，见上）
-    local out = {}
-    local pending_en = {}
-    local en_exact = nil
-    local n = 0
-    for cand in input:iter() do
-        n = n + 1
-        if n > 500 then
-            table.insert(out, cand)
-        elseif is_plain_en(cand.text) then
-            if want_exact and not en_exact and cand.text:lower() == clean then
-                en_exact = cand
-            elseif partial or cand.text:lower() ~= code:lower() then
-                table.insert(pending_en, cand)
-            else
-                table.insert(out, cand)
-            end
-        else
-            table.insert(out, cand)
+    emit_stream(input, clean, want_exact, function(cand)
+        if not is_plain_en(cand.text) then
+            return false
         end
-    end
-    -- 🔥 精确英文词托到第 4 位（中文前三名不动；本来就在前面的不降级）
-    if en_exact and #out > EN_SLOT then
-        table.insert(out, EN_SLOT + 1, en_exact)
-        en_exact = nil
-    end
-    for _, cand in ipairs(out) do
-        yield(cand)
-    end
-    if en_exact then
-        yield(en_exact)
-    end
-    for _, cand in ipairs(pending_en) do
-        yield(cand)
-    end
+        if not partial and cand.text:lower() == code_lower then
+            return false    -- 完整键入的英文词不沉底（精确词另由 emit_stream 托底）
+        end
+        return true
+    end)
 end
 
 return M
