@@ -31,7 +31,31 @@
 --   由 scripts/gen_common_en_words.py 从 en_dicts 生成）。真英文词回原位，
 --   鬼词继续沉底，辅音简拼分支不动，三症回归（19项）不炸。
 
+-- 🔥 2026-10-31 英文精确词保底位（爸爸实测「简单英文单词几乎全军覆没」）：
+--   根因二连：
+--     ① 雾凇 rime_ice 的模糊拼写（derive/([rtsdghkzc])o(u|ng)$/$1o/ 等）让
+--        go/to/do 同时命中「够/宫/狗」「同/头/通」等上百个中文候选——实测
+--        go 的英文精确词排在第 50 位（7 个/页 = 第 8 页），用户根本翻不到；
+--     ② 本滤镜对「合法拼音/中间态」把英文全部沉底（沉底是对的，防打中文时
+--        英文专名抢首位），但也把 text==code 的精确词一起沉了（he/can 完全消失）。
+--   修法（不破坏中文优先，三症不复发）：
+--     · 输入码命中常用英文词表（common_en_words.lua）时，把 text==code 的英文
+--       精确候选**托到第 4 位**（0-based slot 3，第一页可见，可用数字键选）；
+--     · 中文前三名原位不动（women→我们 仍首位、rug→如果 仍首位，金标准守住）；
+--     · 前缀补全词继续沉底（niha 中间态英文专名不抢位）；
+--     · 精确词本来就在 slot 之前的（is/in/it/hello）不降级。
+--   设计取舍：这是「保底可见」而不是「英文优先」——中文输入法的第一职责仍是
+--   打中文；英文词在第 4 位随手可选，且从第 4 位选一次就会被 RIME 学习置顶。
+
 local M = {}
+
+-- 英文精确词托底位置（0-based）：3 = 第 4 个候选
+local EN_SLOT = 3
+
+-- 纯字母英文候选（排除中英混排、数字、emoji）
+local function is_plain_en(text)
+    return text:match("^[%a'%-]+$") ~= nil
+end
 
 -- 🔥 共享拼音判定模块。pcall 容错：缺失时退回本地内联音节表（旧行为），
 -- 不崩溃（金标准 18 项会抓住降级）。
@@ -145,27 +169,72 @@ function M.func(input, env)
     if partial and not seq and common_en and common_en[clean] == true then
         chinese_mode = false
     end
+    -- 🔥 2026-10-31：输入码命中常用英文词表 → 精确词保底到第 4 位（见文件头）
+    local want_exact = common_en and common_en[clean] == true
+
     if not chinese_mode then
-        -- 非拼音序列也非辅音简拼 = 用户在查英文词：原样放行（前缀补全保持可见）
+        -- 非拼音序列也非辅音简拼 = 用户在查英文词：原样放行（前缀补全保持可见）。
+        -- 保底位只处理「精确词被埋在后面」的情况；本来就在前三位的不动。
+        if not want_exact then
+            for cand in input:iter() do
+                yield(cand)
+            end
+            return
+        end
+        local out = {}
+        local en_exact = nil
         for cand in input:iter() do
+            if not en_exact and is_plain_en(cand.text)
+                    and cand.text:lower() == clean then
+                en_exact = cand
+            else
+                table.insert(out, cand)
+            end
+        end
+        if en_exact and #out > EN_SLOT then
+            table.insert(out, EN_SLOT + 1, en_exact)
+            en_exact = nil
+        end
+        for _, cand in ipairs(out) do
             yield(cand)
+        end
+        if en_exact then
+            yield(en_exact)
         end
         return
     end
     -- 拼音序列 = 用户在打中文：英文前缀补全沉底
     -- （完整键入的英文词 text==code 豁免——但中间态不豁免，见上）
+    local out = {}
     local pending_en = {}
+    local en_exact = nil
     local n = 0
     for cand in input:iter() do
         n = n + 1
         if n > 500 then
-            yield(cand)
-        elseif cand.text:match("^[%a'%-]+$")
-                and (partial or cand.text:lower() ~= code:lower()) then
-            table.insert(pending_en, cand)
+            table.insert(out, cand)
+        elseif is_plain_en(cand.text) then
+            if want_exact and not en_exact and cand.text:lower() == clean then
+                en_exact = cand
+            elseif partial or cand.text:lower() ~= code:lower() then
+                table.insert(pending_en, cand)
+            else
+                table.insert(out, cand)
+            end
         else
-            yield(cand)
+            table.insert(out, cand)
         end
+    end
+    -- 🔥 精确英文词托到第 4 位（中文前三名不动；本来就在前面的不降级）
+    if en_exact and #out > EN_SLOT then
+        table.insert(out, EN_SLOT + 1, en_exact)
+        en_exact = nil
+    end
+    for _, cand in ipairs(out) do
+        yield(cand)
+    end
+    if en_exact then
+        yield(en_exact)
     end
     for _, cand in ipairs(pending_en) do
         yield(cand)
